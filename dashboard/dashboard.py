@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -7,6 +7,11 @@ import plotly.graph_objects as go
 import streamlit as st
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+from app.database.db import SessionLocal
+from app.model_loader import get_current_model_info
+from app.services.monitoring_service import MonitoringService
+from app.services.roi_service import simulate_roi
 
 load_dotenv()
 
@@ -22,16 +27,11 @@ if not DATABASE_URL:
     st.error("DATABASE_URL is not set in your environment.")
     st.stop()
 
-engine = create_engine(DATABASE_URL)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-from app.database.db import SessionLocal
-from app.model_loader import get_current_model_info
-from app.services.monitoring_service import MonitoringService
-from app.services.roi_service import simulate_roi
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
-# ---------------------------------------------------------------------------
-# Custom CSS
-# ---------------------------------------------------------------------------
 st.markdown(
     """
 <style>
@@ -107,25 +107,17 @@ button[kind="primary"] {
     unsafe_allow_html=True,
 )
 
-# ===========================================================================
-# DATA LOADERS
-# ===========================================================================
-
-
 @st.cache_data(ttl=60)
 def load_users() -> pd.DataFrame:
     return pd.read_sql("SELECT * FROM users", engine)
-
 
 @st.cache_data(ttl=60)
 def load_feature_store() -> pd.DataFrame:
     return pd.read_sql("SELECT * FROM feature_store ORDER BY computed_at DESC", engine)
 
-
 @st.cache_data(ttl=60)
 def load_prediction_logs() -> pd.DataFrame:
     return pd.read_sql("SELECT * FROM model_predictions ORDER BY created_at DESC", engine)
-
 
 @st.cache_data(ttl=60)
 def load_plan_summary() -> pd.DataFrame:
@@ -141,7 +133,6 @@ def load_plan_summary() -> pd.DataFrame:
     """
     return pd.read_sql(query, engine)
 
-
 @st.cache_data(ttl=60)
 def load_high_risk_users(limit: int = 20) -> pd.DataFrame:
     query = text(
@@ -156,7 +147,6 @@ def load_high_risk_users(limit: int = 20) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(query, conn, params={"limit_value": limit})
 
-
 @st.cache_data(ttl=60)
 def load_revenue_at_risk() -> float:
     query = """
@@ -166,7 +156,6 @@ def load_revenue_at_risk() -> float:
     with engine.connect() as conn:
         result = conn.execute(text(query)).scalar()
     return float(result or 0.0)
-
 
 @st.cache_data(ttl=60)
 def load_revenue_at_risk_by_plan(threshold: float = 0.5) -> pd.DataFrame:
@@ -185,7 +174,6 @@ def load_revenue_at_risk_by_plan(threshold: float = 0.5) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(query, conn, params={"threshold": threshold})
 
-
 @st.cache_data(ttl=60)
 def load_monitoring_daily() -> pd.DataFrame:
     query = """
@@ -198,7 +186,6 @@ def load_monitoring_daily() -> pd.DataFrame:
     """
     return pd.read_sql(query, engine)
 
-
 @st.cache_data(ttl=60)
 def get_drift_analysis():
     db = SessionLocal()
@@ -209,14 +196,12 @@ def get_drift_analysis():
     finally:
         db.close()
 
-
 @st.cache_data(ttl=60)
 def get_model_version_info():
     try:
         return get_current_model_info()
     except Exception as e:
         return {"version": "unknown", "error": str(e)}
-
 
 @st.cache_data(ttl=60)
 def get_feature_stats():
@@ -227,12 +212,6 @@ def get_feature_stats():
         return {"error": str(e)}
     finally:
         db.close()
-
-
-# ===========================================================================
-# HELPER FUNCTIONS
-# ===========================================================================
-
 
 def build_risk_segments(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "churn_probability" not in df.columns:
@@ -245,14 +224,12 @@ def build_risk_segments(df: pd.DataFrame) -> pd.DataFrame:
         labels=["Low Risk", "Medium Risk", "High Risk"],
     )
 
-    result = (
+    return (
         segmented["risk_band"]
         .value_counts(sort=False)
         .rename_axis("risk_band")
         .reset_index(name="count")
     )
-    return result
-
 
 def build_prediction_label_counts(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
     if df.empty or "churn_probability" not in df.columns:
@@ -262,14 +239,13 @@ def build_prediction_label_counts(df: pd.DataFrame, threshold: float) -> pd.Data
     pred_df["prediction_label"] = pred_df["churn_probability"].apply(
         lambda x: "Churn" if x >= threshold else "Non-Churn"
     )
-    result = (
+
+    return (
         pred_df["prediction_label"]
         .value_counts()
         .rename_axis("prediction_label")
         .reset_index(name="count")
     )
-    return result
-
 
 def build_drift_comparison_df(drift_info: dict) -> pd.DataFrame:
     return pd.DataFrame(
@@ -282,7 +258,6 @@ def build_drift_comparison_df(drift_info: dict) -> pd.DataFrame:
         }
     )
 
-
 def make_time_features(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "prediction_day" not in df.columns:
         return df
@@ -290,20 +265,17 @@ def make_time_features(df: pd.DataFrame) -> pd.DataFrame:
     temp = df.copy()
     temp["prediction_day"] = pd.to_datetime(temp["prediction_day"])
     temp = temp.sort_values("prediction_day")
+
     if "prediction_count" in temp.columns:
         temp["prediction_count_rolling_3"] = temp["prediction_count"].rolling(3, min_periods=1).mean()
+
     if "avg_churn_probability" in temp.columns:
         temp["avg_churn_probability_rolling_3"] = temp["avg_churn_probability"].rolling(3, min_periods=1).mean()
-    return temp
 
+    return temp
 
 def format_naira(value: float) -> str:
     return f"N{value:,.2f}"
-
-
-# ===========================================================================
-# LOAD ALL DATA
-# ===========================================================================
 
 st.title("Bank Churn Intelligence Dashboard")
 st.caption("Business analytics and ML monitoring for the churn prediction platform")
@@ -313,7 +285,7 @@ try:
     features_df = load_feature_store()
     logs_df = load_prediction_logs()
     plan_df = load_plan_summary()
-    _ = load_high_risk_users()
+    load_high_risk_users()
     revenue_at_risk = load_revenue_at_risk()
     monitoring_daily_df = load_monitoring_daily()
     drift_info = get_drift_analysis()
@@ -327,15 +299,10 @@ if users_df.empty:
     st.warning("No users found in the database yet.")
     st.stop()
 
-# normalize dates
 if "created_at" in logs_df.columns:
     logs_df["created_at"] = pd.to_datetime(logs_df["created_at"], errors="coerce")
 
 monitoring_daily_df = make_time_features(monitoring_daily_df)
-
-# ===========================================================================
-# SIDEBAR FILTERS
-# ===========================================================================
 
 st.sidebar.header("Filters")
 
@@ -345,18 +312,14 @@ selected_plan = st.sidebar.selectbox(
 )
 
 region_options = sorted(users_df["region"].dropna().unique().tolist()) if "region" in users_df.columns else []
-selected_regions = st.sidebar.multiselect(
-    "Region", options=region_options, default=region_options
-)
+selected_regions = st.sidebar.multiselect("Region", options=region_options, default=region_options)
 
 device_options = (
     sorted(users_df["device_type"].dropna().unique().tolist())
     if "device_type" in users_df.columns
     else []
 )
-selected_devices = st.sidebar.multiselect(
-    "Device Type", options=device_options, default=device_options
-)
+selected_devices = st.sidebar.multiselect("Device Type", options=device_options, default=device_options)
 
 risk_threshold = st.sidebar.slider(
     "High Risk Threshold",
@@ -373,10 +336,13 @@ st.sidebar.caption(
 )
 
 filtered_users = users_df.copy()
+
 if selected_plan != "All":
     filtered_users = filtered_users[filtered_users["subscription_plan"] == selected_plan]
+
 if selected_regions and "region" in filtered_users.columns:
     filtered_users = filtered_users[filtered_users["region"].isin(selected_regions)]
+
 if selected_devices and "device_type" in filtered_users.columns:
     filtered_users = filtered_users[filtered_users["device_type"].isin(selected_devices)]
 
@@ -390,10 +356,6 @@ prediction_counts_df = build_prediction_label_counts(filtered_users, threshold=r
 risk_segment_df = build_risk_segments(filtered_users)
 drift_compare_df = build_drift_comparison_df(drift_info)
 
-# ===========================================================================
-# SECTION 1 — KPI
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("Key Performance Indicators")
 
@@ -402,10 +364,6 @@ col1.metric("Total Users", f"{total_users:,}")
 col2.metric("High-Risk Users", f"{high_risk_count:,}")
 col3.metric("Avg Churn Probability", f"{average_churn_probability:.2%}", f"{avg_churn_probability_delta:+.2%}")
 col4.metric("Monthly Revenue at Risk", format_naira(revenue_at_risk))
-
-# ===========================================================================
-# SECTION 2 — MODEL STATUS
-# ===========================================================================
 
 st.markdown("---")
 st.subheader("Model Status and Monitoring")
@@ -420,9 +378,9 @@ with model_col1:
 
 with model_col2:
     metrics = model_info.get("baseline_metrics", {})
-    f1_score = metrics.get("f1", 0)
+    model_f1 = metrics.get("f1", 0)
     accuracy = metrics.get("accuracy", 0)
-    st.metric("Model F1 Score", f"{f1_score:.4f}")
+    st.metric("Model F1 Score", f"{model_f1:.4f}")
     st.caption(f"Accuracy: {accuracy:.2%}")
 
 with model_col3:
@@ -433,10 +391,6 @@ with model_col3:
         st.success("No Drift Detected")
     change_pct = drift_info.get("change_percentage", 0)
     st.caption(f"Change: {change_pct:.1f}%")
-
-# ===========================================================================
-# SECTION 3 — AT-RISK REVENUE BY PLAN
-# ===========================================================================
 
 st.markdown("---")
 st.subheader("At-Risk Revenue by Plan")
@@ -473,10 +427,6 @@ if not revenue_by_plan_df.empty:
 else:
     st.info("No at-risk users found for the current threshold.")
 
-# ===========================================================================
-# SECTION 4 — ROI SIMULATION
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("ROI Simulation")
 st.caption("Estimate the return on investment for churn-prevention campaigns")
@@ -485,13 +435,9 @@ roi_col1, roi_col2 = st.columns([1, 2])
 
 with roi_col1:
     st.markdown("**Intervention Parameters**")
-    intervention_cost = st.number_input(
-        "Intervention cost per user (N)", min_value=0.0, value=500.0, step=50.0
-    )
+    intervention_cost = st.number_input("Intervention cost per user (N)", min_value=0.0, value=500.0, step=50.0)
     retention_rate = st.slider("Expected retention rate", 0.0, 1.0, 0.30, 0.05)
-    avg_ltv = st.number_input(
-        "Average LTV per user (N)", min_value=0.0, value=5000.0, step=100.0
-    )
+    avg_ltv = st.number_input("Average LTV per user (N)", min_value=0.0, value=5000.0, step=100.0)
     run_roi = st.button("Simulate ROI", type="primary")
 
 with roi_col2:
@@ -567,10 +513,6 @@ with roi_col2:
             "**Simulate ROI** to see the projected return on your retention campaign."
         )
 
-# ===========================================================================
-# SECTION 5 — DISTRIBUTION CHARTS
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("Distribution Charts")
 
@@ -618,10 +560,6 @@ with dist_col2:
     else:
         st.info("No plan summary available.")
 
-# ===========================================================================
-# SECTION 6 — RISK OVERVIEW
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("Risk Overview")
 
@@ -662,16 +600,10 @@ with risk_col2:
     else:
         st.info("Prediction split unavailable.")
 
-# ===========================================================================
-# SECTION 7 — MONITORING
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("Monitoring")
 
-tab_pred, tab_drift, tab_feat = st.tabs(
-    ["Prediction Trends", "Drift Detection", "Feature Statistics"]
-)
+tab_pred, tab_drift, tab_feat = st.tabs(["Prediction Trends", "Drift Detection", "Feature Statistics"])
 
 with tab_pred:
     mon_col1, mon_col2 = st.columns(2)
@@ -789,10 +721,6 @@ with tab_feat:
     else:
         st.info("Feature statistics not available yet.")
 
-# ===========================================================================
-# SECTION 8 — FEATURE EXPLORER
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("Feature Explorer")
 
@@ -818,10 +746,6 @@ if numeric_feature_candidates:
 else:
     st.info("No numeric features available for exploration.")
 
-# ===========================================================================
-# SECTION 9 — DATA TABLES
-# ===========================================================================
-
 st.markdown("---")
 st.subheader("Data Tables")
 
@@ -831,9 +755,7 @@ tab_hr, tab_plan, tab_logs, tab_features = st.tabs(
 
 with tab_hr:
     display_hr = (
-        high_risk_users.sort_values(
-            ["churn_probability", "monthly_spend"], ascending=[False, False]
-        )
+        high_risk_users.sort_values(["churn_probability", "monthly_spend"], ascending=[False, False])
         .head(20)
         .copy()
     )
@@ -868,9 +790,5 @@ with tab_features:
     display_features = features_df.head(50).copy()
     st.dataframe(display_features, use_container_width=True, hide_index=True)
 
-# ===========================================================================
-# FOOTER
-# ===========================================================================
-
 st.markdown("---")
-st.caption(f"Last refreshed: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+st.caption(f"Last refreshed: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
