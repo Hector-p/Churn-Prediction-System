@@ -1,4 +1,10 @@
 import os
+import sys
+
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -17,7 +23,7 @@ load_dotenv()
 
 st.set_page_config(
     page_title="Bank Churn Intelligence Dashboard",
-    page_icon="📊",
+    page_icon="",
     layout="wide",
 )
 
