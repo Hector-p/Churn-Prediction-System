@@ -15,7 +15,12 @@ app.include_router(users_router)
 app.include_router(churn_router)
 app.include_router(feature_store_router)
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+    
 
+    
 @app.get("/")
 def root():
     return {"message": "Platform is running successfully"}
