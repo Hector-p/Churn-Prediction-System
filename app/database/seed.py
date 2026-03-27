@@ -8,47 +8,36 @@ def run_seed(n_users: int = 2000, days: int = 90):
 
     db = SessionLocal()
     try:
+        # Clear existing seeded data first
+        db.query(UsageLog).delete()
+        db.query(Transaction).delete()
+        db.query(User).delete()
+        db.commit()
+
         users, usage_logs, transactions, churn_labels = build_dataset(
             n_users=n_users, days=days
         )
 
-        
-        existing_emails = {email for (email,) in db.query(User.email).all()}
-
         user_objs = []
         synthetic_to_user_obj = {}
 
-      
+        # build_dataset uses enumerate(..., start=1)
         for synthetic_id, u in enumerate(users, start=1):
-            email = u.get("email")
-
-            if not email:
-                continue
-
-            if email in existing_emails:
-                continue
-
             user_obj = User(**u)
             user_objs.append(user_obj)
             synthetic_to_user_obj[synthetic_id] = user_obj
-            existing_emails.add(email)
 
-      
-        if user_objs:
-            db.add_all(user_objs)
-            db.commit()
+        db.add_all(user_objs)
+        db.commit()
 
-           
-            for user_obj in user_objs:
-                db.refresh(user_obj)
+        for user_obj in user_objs:
+            db.refresh(user_obj)
 
-        
         synthetic_to_real_user_id = {
             synthetic_id: user_obj.id
             for synthetic_id, user_obj in synthetic_to_user_obj.items()
         }
 
-        
         usage_log_objs = []
         for row in usage_logs:
             synthetic_user_id = row.get("user_id")
@@ -67,11 +56,9 @@ def run_seed(n_users: int = 2000, days: int = 90):
                 )
             )
 
-        if usage_log_objs:
-            db.add_all(usage_log_objs)
-            db.commit()
+        db.add_all(usage_log_objs)
+        db.commit()
 
-        
         transaction_objs = []
         for row in transactions:
             synthetic_user_id = row.get("user_id")
@@ -89,24 +76,21 @@ def run_seed(n_users: int = 2000, days: int = 90):
                 )
             )
 
-        if transaction_objs:
-            db.add_all(transaction_objs)
-            db.commit()
+        db.add_all(transaction_objs)
+        db.commit()
 
-        
         churn_map = {
             row["user_id"]: float(row["churn_probability"])
             for row in churn_labels
         }
 
-        
         for synthetic_id, user_obj in synthetic_to_user_obj.items():
             user_obj.churn_probability = churn_map.get(synthetic_id, 0.0)
 
         db.commit()
 
         print(
-            f"Seed complete. Added {len(user_objs)} new users, "
+            f"Seed complete. Added {len(user_objs)} users, "
             f"{len(usage_log_objs)} usage logs, "
             f"{len(transaction_objs)} transactions."
         )
